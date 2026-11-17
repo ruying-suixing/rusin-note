@@ -44,6 +44,13 @@ uv run python main.py      # 运行桌面端
 
 平台运行时要求：Windows 需 [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)（Win10/11 通常已预装）；Linux 需 GTK3 与 WebKit2GTK 4.1。
 
+## 常见问题
+
+**Windows 下载后双击弹「Unhandled exception in script」，日志报 `Failed to resolve Python.Runtime.Loader.Initialize ...\pythonnet\runtime\Python.Runtime.dll`**
+
+浏览器给下载的 ZIP 打上的「来自 Internet」标记（`Zone.Identifier` 备用数据流）会随解压继承到每个文件，.NET 拒绝加载这类程序集，pythonnet 初始化失败。`0.1.1` 起程序启动时会自动清除该标记；更早的版本请先右键 ZIP → 属性 → 勾选「解除锁定」再解压，或对已解压目录执行 `Get-ChildItem .\rusin-note-desktop -Recurse -File | Unblock-File`。
+
+
 ## 测试
 
 ```bash
@@ -58,7 +65,7 @@ uv run python release/build.py                        # 构建当前平台
 uv run python release/build.py --merge dist/downloads # 合并各平台清单
 ```
 
-产物在 `dist/downloads/`（安装包 + `manifest.json`），整目录投放到网页版数据目录的 `downloads/` 下即完成发布。详见 [桌面客户端文档](../docs/desktop.md)。
+产物在 `dist/downloads/`（安装包 + `manifest.json`）。**Windows 是 Inno Setup 单个安装包 `.exe`（装完自动创建桌面 / 开始菜单快捷方式，可正常卸载）**，macOS 是内含 `.app` 的 zip，Linux 是 tar.gz；三个平台构建完成后合并清单，随安装包一起挂到 GitHub Release。详见 [桌面客户端文档](../docs/desktop.md)。
 
 ## 目录结构
 

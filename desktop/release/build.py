@@ -4,9 +4,10 @@
     uv run python release/build.py                 # 构建当前平台
     uv run python release/build.py --merge dist/downloads   # 合并各平台清单
 
-产物落在 dist/downloads/，整目录投放到网页版数据目录的 downloads/ 下即可被
-/downloads 落地页读取。每个平台先产出 manifest-<platform>-<arch>.json，
-三平台构建完成后用 --merge 合成 manifest.json。
+产物落在 dist/downloads/：**Windows 为单个安装包 .exe**（装完自动生成桌面与开始
+菜单快捷方式，可正常卸载），macOS 为内含 .app 的 zip，Linux 为 tar.gz。每个平台
+先产出 manifest-<platform>-<arch>.json，三平台构建完成后用 --merge 合成
+manifest.json，随安装包一起挂到 GitHub Release。
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import argparse
 import hashlib
 import json
 import platform
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -24,12 +26,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "release" / "rusin-note-desktop.spec"
+INSTALLER_SCRIPT = ROOT / "release" / "rusin-note-desktop.iss"
 DIST = ROOT / "dist"
 WORK = ROOT / "build"
 OUTPUT = DIST / "downloads"
 APP_NAME = "rusin-note-desktop"
 PLATFORM_ORDER = ("windows", "macos", "linux")
 CHANNELS = ("stable", "beta")
+# Inno Setup 常见安装位置（PATH 里没有时兜底）
+ISCC_CANDIDATES = (
+    r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+    r"C:\Program Files\Inno Setup 6\ISCC.exe",
+)
 
 
 def platform_key() -> str:
@@ -46,7 +54,16 @@ def arch_key() -> str:
 
 
 def archive_suffix() -> str:
-    return ".tar.gz" if platform_key() == "linux" else ".zip"
+    """Windows 分发 Inno Setup 安装包；Linux 用 tar.gz，macOS 用 zip（内含 .app）。"""
+    plat = platform_key()
+    if plat == "windows":
+        return "-setup.exe"
+    return ".tar.gz" if plat == "linux" else ".zip"
+
+
+def windows_installer() -> bool:
+    """是否构建安装包（仅 Windows：快捷方式 / 卸载项由 Inno Setup 负责）。"""
+    return platform_key() == "windows"
 
 
 def artifact_name(version: str, plat: str, arch: str, suffix: str) -> str:
@@ -77,12 +94,51 @@ def write_metadata(version: str, channel: str) -> None:
 
 
 def run_pyinstaller() -> Path:
+    """跑 PyInstaller（各平台统一 onedir；Windows 之后再由 Inno Setup 打成安装包）。"""
     command = [
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
         "--distpath", str(DIST), "--workpath", str(WORK), str(SPEC),
     ]
     subprocess.run(command, check=True, cwd=str(ROOT))
     return DIST / APP_NAME
+
+
+def find_iscc() -> str:
+    """定位 Inno Setup 的命令行编译器 ISCC.exe。"""
+    for candidate in (shutil.which("ISCC"), shutil.which("iscc"), *ISCC_CANDIDATES):
+        if candidate and Path(candidate).is_file():
+            return str(candidate)
+    raise FileNotFoundError(
+        "未找到 Inno Setup 的 ISCC.exe。请先安装 Inno Setup 6"
+        "（CI 上由 `choco install innosetup` 提供），或把 ISCC 加入 PATH。"
+    )
+
+
+def make_installer(built: Path, target: Path, version: str) -> Path:
+    """用 Inno Setup 把 onedir 产物打成 Windows 安装包（含桌面/开始菜单快捷方式）。"""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    icon = ROOT / "data" / "app.ico"
+    command = [
+        find_iscc(), "/Qp",
+        f"/DAppVersion={version}",
+        f"/DSourceDir={built}",
+        f"/DIconFile={icon}",
+        f"/O{target.parent}",
+        f"/F{target.stem}",
+        str(INSTALLER_SCRIPT),
+    ]
+    subprocess.run(command, check=True, cwd=str(ROOT))
+    if not target.is_file():
+        raise FileNotFoundError(f"安装包未生成: {target}")
+    return target
+
+
+def make_artifact(built: Path, target: Path, version: str) -> Path:
+    """产出下载文件：Windows 编译安装包，其余平台压缩目录。"""
+    if windows_installer():
+        return make_installer(built, target, version)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return make_archive(built, target)
 
 
 def make_archive(built: Path, target: Path) -> Path:
@@ -111,7 +167,7 @@ def build(version: str, channel: str, notes: str, released_at: str) -> Path:
     write_metadata(version, channel)
     built = run_pyinstaller()
     name = artifact_name(version, plat, arch, archive_suffix())
-    artifact = make_archive(built, OUTPUT / name)
+    artifact = make_artifact(built, OUTPUT / name, version)
     partial = {
         "version": version,
         "channel": channel,
